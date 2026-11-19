@@ -1,0 +1,18 @@
+/target
+Cargo.lock.bak
+
+# Index database (disposable, lives in XDG data dir by default)
+*.db
+*.db-shm
+*.db-wal
+
+# Session-mining outputs (may contain private prompts/paths)
+eval.jsonl
+fixtures/private/
+session-snapshots/
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
