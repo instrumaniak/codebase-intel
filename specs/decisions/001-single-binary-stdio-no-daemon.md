@@ -2,6 +2,8 @@
 
 ## Status: Accepted
 
+**Revision notes (2026-11-19, pre-implementation spec review):** (1) lock mechanism corrected from `O_EXLOCK` (BSD/macOS only) to `flock`; (2) locking now one std code path — `File::try_lock` — because Windows is a first-class target (ADR 009).
+
 ## Date: 2026-11
 
 ## Context
@@ -32,7 +34,7 @@ Single `codebase-intel` binary; MCP clients spawn it on demand over **stdio**; n
 
 ## Consequences
 
-- Two clients spawning the server concurrently both work for **reads**; reindex serializes via `<db>.lock` (O_EXLOCK), loser reports `busy` (see architecture.md §4.4).
+- Two clients spawning the server concurrently both work for **reads**; reindex serializes via `<db>.lock` (std `File::try_lock` — `flock` on Unix, `LockFileEx` on Windows), loser reports `busy` (see architecture.md §4.4, ADR 009).
 - No push notifications (e.g., "index finished") — clients poll `index_status`. Acceptable.
 - If future clients need HTTP transport, a `serve --http :8787` subcommand can be added later; the stdio path stays canonical.
 

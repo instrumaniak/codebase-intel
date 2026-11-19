@@ -11,11 +11,12 @@
 
 - **Rust**, edition 2024; single crate, one binary; library + thin `main.rs`
 - **MCP**: `rmcp` — stdio transport only in v1 (ADR 001)
-- **Storage**: SQLite, WAL, mmap; **FTS5 trigram** + **sqlite-vec** (bundled extension, in-Rust cosine BLOB fallback) (ADR 002)
+- **Storage**: SQLite, WAL, mmap; **FTS5 trigram** + vectors as raw float32 BLOBs in a plain table ranked by **sqlite-vec scalar `vec_distance_cosine`** (no vec0; in-Rust cosine fallback) (ADR 002)
 - **Chunking**: tree-sitter (rust, typescript/tsx, javascript/jsx, markdown, sql, yaml, toml, json) + gap-span coverage invariant; line-window fallback (ADR 003)
-- **Retrieval**: vector top-32 ∪ FTS top-32 → **RRF k=60** → tiny symbol/path boosts; **no reranker** (ADR 004)
+- **Retrieval**: vector top-32 ∪ FTS top-32 → **RRF k=60** → multiplicative symbol/path boosts (×1.5/×1.25/×1.1); **no reranker** (ADR 004)
 - **Embeddings**: Ollama HTTP `localhost:11434`, `nomic-embed-text`, 768-d; `Embedder` trait, circuit-breaker degraded mode (ADR 005)
 - **Git**: `gix` (gitoxide) — no shelling out to `git`
+- **Platforms**: Linux, macOS, Windows all first-class (ADR 009); platform data dir via `directories`; lock via std `File::try_lock` (no lock crate); RSS check in dev-deps via `sysinfo`
 - **Hashing**: blake3 · **CLI**: clap · **Runtime**: tokio · **Errors**: thiserror (lib) / anyhow (main only)
 
 ## Hard rules
@@ -30,6 +31,9 @@
 8. **Determinism** — no wall-clock, no randomness without seeded RNG in retrieval/eval paths.
 9. **No `unwrap()`/`expect()`** in `src/` outside tests and `main.rs`.
 10. **`eval` never writes to the index** (module dependency rules, architecture.md §11).
+11. **stdout is the MCP stream in `serve`** — one JSON-RPC frame per line, nothing else (architecture.md §6.4). Logs go to stderr or `CODEBASE_INTEL_LOG`; no `print!`/`println!` in library code.
+12. **FTS stays in sync via schema triggers** — `chunks_fts` is maintained by the triggers in `schema.sql` (§4.2), never by application code; `store/fts.rs` holds queries and integrity-check only.
+13. **Platform cfg is confined to `util.rs` + the walker** — no `#[cfg(unix)]`/`#[cfg(windows)]` anywhere else; `cargo test` deps test enforces it (§11). Platform-agnostic everywhere is the point of ADR 009.
 
 ## Performance discipline
 

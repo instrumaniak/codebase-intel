@@ -28,5 +28,5 @@
 
 - PRD uses stable IDs: `US-<epic><nn>` (user stories), `F<nn>` (features), `NFR-<nn>` (non-functional). Acceptance criteria are testable statements ("given/when/then" or imperative checklists) — no "fast", no "intuitive".
 - Architecture uses `AST-<nn>` / `ADR-aware` references and links every claim to an ADR where one exists.
-- ADRs are numbered monotonically and immutable once Accepted; superseding creates a new ADR.
+- ADRs are numbered monotonically and immutable once Accepted **and the implementation has shipped**; before that, folding review fixes into an ADR is allowed and recorded as a dated `Revision note (…spec review…)` line under `Status`. After release, superseding creates a new ADR.
 - **Keep docs small and current.** If an implementation reveals the spec is wrong, the spec changes first, in the same commit as the code.

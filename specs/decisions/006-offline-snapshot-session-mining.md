@@ -29,7 +29,7 @@ Phase 2 derives retrieval ground truth from opencode session history stored in a
 ## Consequences
 
 - Miner is a separate subcommand (`mine-sessions`) that refuses to run against the live path (checks the snapshot is a *copy*: path ≠ resolved `OPENCODE_DB`, plus a `query_only` pragma).
-- Snapshot inherits file permissions; mining temp dirs are created `0700` under XDG cache; no snapshot ever committed (`.gitignore`).
+- Snapshot inherits file permissions; mining temp dirs are created with owner-only permissions (`0700` on Unix; owner-only ACL default on Windows) under the platform temp/cache dir; no snapshot ever committed (`.gitignore`).
 - Freshness ceiling = snapshot moment; fine for offline eval (history is history).
 
 ## Revisit Trigger

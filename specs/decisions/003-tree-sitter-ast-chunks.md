@@ -2,6 +2,8 @@
 
 ## Status: Accepted
 
+**Revision note (2026-11-19, pre-implementation spec review):** gap-window overlap removed — it broke the "every byte in exactly one chunk" invariant by construction; the property test is now defined as byte-span tiling instead of concatenated-text reassembly.
+
 ## Date: 2026-11
 
 ## Context
@@ -13,7 +15,7 @@ Retrieval quality is bounded by chunking. A function split across two chunks is 
 tree-sitter with per-language symbol queries for supported languages (v1: Rust, TS/TSX, JS/JSX, Markdown, SQL, YAML, TOML, JSON), plus three invariants:
 
 1. **Symbol chunks**: named nodes (fn/impl/trait/struct/class/…) with attached doc comments, including a breadcrumb (`parent`) of enclosing symbols.
-2. **Gap chunks**: all uncovered bytes are indexed as line-based chunks (≤ 120 lines, blank-line preferred splits, 4-line overlap).
+2. **Gap chunks**: all uncovered bytes are indexed as line-based chunks (≤ 120 lines, blank-line preferred splits, **abutting — gap windows never overlap**). The 4-line overlap previously noted lives only in snippet rendering (±4 lines of source context around a snippet), never in stored coverage.
 3. **Every byte is in exactly one chunk.**
 
 Unsupported/oversized files fall back to pure line-window chunking with the same coverage guarantee.
@@ -27,7 +29,7 @@ Unsupported/oversized files fall back to pure line-window chunking with the same
 
 ### Why gap spans (the under-appreciated part)
 - Magic constants, SQL strings, config blobs, markdown prose, module-level statements — semantically meaningful content that symbol grammars deliberately skip. Keyword search can still find a literal string in a gap chunk; semantic search gets a window that at least isn't truncated mid-symbol.
-- Coverage converts "search didn't miss the file" from aspiration to **invariant with a property test** (reassemble all chunks == original bytes, for random trees).
+- Coverage converts "search didn't miss the file" from aspiration to **invariant with a property test**: for random trees, chunks sorted by `start_byte` tile each file exactly — contiguous, non-overlapping, total, compared as **source byte spans** (per-chunk headers stripped).
 
 ### Why not language-native parsers
 - rustc/TS-compiler coupling means indexing depends on project toolchain availability and version parity; tree-sitter is syntax-only, fast (~10–50 MB/s), and uniform.

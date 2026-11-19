@@ -48,7 +48,6 @@ P1 is the design driver for every interface decision: tools must be cheap to cal
 - Re-ranking with cross-encoders (see ADR 004 — explicitly rejected for v1)
 - Filesystem watching / live updates (reindex is lazy/manifest-based in v1)
 - Multi-project indexes in one DB, remote/server mode, web UI
-- Windows support (Linux first; macOS best-effort; Windows unsupported until demanded)
 - Secret scanning — we *exclude* likely-secret files; we do not scan for secrets
 
 ## 4. User stories
@@ -61,8 +60,8 @@ Grouped by epic. IDs are stable; acceptance criteria are testable. "AC" = accept
 > As the developer (P2), I run `codebase-intel index` in any git repo and the index is built respecting `.gitignore`, without me configuring anything else.
 
 - AC1: Honors `.gitignore`, `.git/info/exclude`, and nested ignore files
-- AC2: Skips: files > 256 KB, binary files, lockfiles (`package-lock.json`, `yarn.lock`, `Cargo.lock`, `pnpm-lock.yaml`, `bun.lockb`), minified assets (avg line length > 2 KB), and the built-in secret-exclusion list (`.env*`, `*.pem`, `*.key`, `*.p12`, `id_rsa*`, `id_ed25519*`, `credentials*.json`, `*.keystore`, `*.jks`, `*.pfx`)
-- AC3: Creates zero files inside the repo (index lives in `~/.local/share/codebase-intel/`)
+- AC2: Skips: files > 256 KB, binary files, lockfiles (`package-lock.json`, `yarn.lock`, `Cargo.lock`, `pnpm-lock.yaml`, `bun.lockb`), minified assets (avg line length > 2 KB), and the built-in secret-exclusion list — the canonical list lives in `architecture.md` §8 and is extended there first, never by ad-hoc filtering here
+- AC3: Creates zero files inside the repo (index lives in the platform data directory — see architecture.md §4.1 for per-OS paths)
 - AC4: Idempotent — running twice in a row re-indexes nothing when the tree is unchanged
 
 **US-102 — Incremental reindex**
@@ -101,21 +100,21 @@ Grouped by epic. IDs are stable; acceptance criteria are testable. "AC" = accept
 
 - AC1: `code_search(query, limit?, path_prefix?, kind?, lang?)` returns ranked results: `path`, `start_line`, `end_line`, `symbol` (when known), `kind`, fused score, snippet (≤ 20 lines)
 - AC2: Hybrid retrieval: vector top-32 (sqlite-vec, cosine) ∪ FTS5/BM25 top-32, fused with RRF (k=60); see [ADR 004](../decisions/004-rrf-hybrid-retrieval-no-reranker-v1.md)
-- AC3: Symbol-name boosting: exact/prefix symbol-name match in query raises that chunk's rank (exact ×1.5, prefix ×1.25, case-insensitive)
+- AC3: Symbol-name boosting: exact/prefix symbol-name match in query raises that chunk's rank (exact ×1.5, prefix ×1.25, case-insensitive); path-component match ×1.1; all boosts are multiplicative on fused score, never additive — see architecture.md §5
 - AC4: `limit` default 10, max 25; output stays compact — full text only via `get_file_outline` or the client's own `read`
 
 **US-202 — Exact identifier lookup stays reliable**
 > As the agent, `code_search("handleJwtRefresh")` finds the function even if embeddings are weak on identifiers.
 
 - AC1: FTS5 with trigram tokenization handles substrings/identifiers (≥ 3 chars) — `JwtRefr` matches `handleJwtRefresh`
-- AC2: Exact-identifier queries (regex `^[A-Za-z_][A-Za-z0-9_]*$`) are allowed to short-circuit to FTS-only ranking when the identifier exists in the index
+- AC2: Exact-identifier queries (regex `^[A-Za-z_][A-Za-z0-9_]{2,}$` — ≥ 3 chars, matching AC1) are allowed to short-circuit to FTS-only ranking when the identifier exists in the index
 - AC3: Keyword-only mode performs within 20% of full hybrid on the eval set for identifier queries (verified by `eval`, not assumed)
 
 **US-203 — Filter results**
 > As the agent, when I know I want Rust source or a specific directory, I scope the search.
 
 - AC1: `path_prefix` matches repo-relative path prefixes, normalized (leading `./` stripped, `/` separators)
-- AC2: `kind` filters by chunk kind (`function`, `method`, `class`, `struct`, `impl`, `module`, `doc`, `other`)
+- AC2: `kind` filters by chunk kind — the full set: `function`, `method`, `class`, `struct`, `impl`, `trait`, `enum`, `module`, `doc`, `gap`, `other` (CHECK-constrained in schema; architecture.md §4.2)
 - AC3: `lang` filters by language id
 - AC4: Filters are applied at the SQL layer pre-fusion (not post-hoc), so filtered searches return real top-N rankings within the filter
 
@@ -140,16 +139,16 @@ Grouped by epic. IDs are stable; acceptance criteria are testable. "AC" = accept
 
 - AC1: Server speaks MCP over stdio (rmcp); tools: `code_search`, `get_file_outline`, `index_status`, `reindex`
 - AC2: Server instructions are emitted at handshake directing agents to prefer `code_search` before `grep` for conceptual queries, and to follow up with `read` for exact code
-- AC3: First query on a cold server (no index) performs a full index inline and answers the query in the same call, with timing reported
+- AC3: First query on a cold server (no index) performs a full index inline and answers the query in the same call, with timing reported (`duration_ms`). Progress is streamed via MCP `notifications/progress` when the client supplies a `progressToken`. If the process is killed or the client disconnects mid-build, per-file transactions + manifest reconcile on the next run (NFR-13): no half-written state is ever visible. This inline cold-start path is an explicit exception to per-call latency budgets — see NFR-3 scope note
 - AC4: `reindex` tool: `mode: "incremental" (default) | "full"`; returns stats (files processed, chunks written, duration)
 
 **US-302 — Concurrent with active development**
 > As the developer, my builds and tests run at full speed while the indexer works, worst case the indexer slows itself down.
 
-- AC1: Indexing uses a worker thread with reduced scheduling priority (`nice(19)` on Unix; best-effort on macOS); it never holds a lock needed by the query path
+- AC1: Indexing runs at background-class OS priority (`nice` + idle I/O on Linux/macOS; `THREAD_MODE_BACKGROUND_BEGIN` on Windows — architecture.md §4.4); it never holds a lock needed by the query path
 - AC2: Reads (queries) use WAL snapshot reads; indexing writes transactions are ≤ 200 ms each (per-file batching)
 - AC3: SQLITE_MMAP_SIZE is set so read-heavy pages come from page cache, not syscalls
-- AC4: If two `serve` processes are spawned (two opencode windows), one is read-only anyway during normal operation, and concurrent reindex attempts serialize on a file lock (`O_EXLOCK` on `<db>.lock`) — loser skips reindex, reports `busy` in status
+- AC4: If two `serve` processes are spawned (two opencode windows), one is read-only anyway during normal operation, and concurrent reindex attempts serialize on a file lock (`std::fs::File::try_lock` on `<db>.lock` — advisory, nonblocking, one code path on all platforms) — loser skips reindex, reports `busy` in status
 
 **US-303 — Honest resource appetite**
 > As the developer, the tool is invisible in daily use.
@@ -204,7 +203,7 @@ Grouped by epic. IDs are stable; acceptance criteria are testable. "AC" = accept
 **US-601 — Installable artifact**
 > As a stranger, I can install and use the tool without talking to the author.
 
-- AC1: `cargo install codebase-intel` and prebuilt GitHub release binaries (Linux x86_64/aarch64)
+- AC1: `cargo install codebase-intel` and prebuilt GitHub release binaries (Linux x86_64/aarch64, macOS arm64/x86_64, Windows x86_64-msvc)
 - AC2: README: install, opencode/Claude Code config snippets, troubleshooting, perf numbers
 - AC3: CI: fmt, clippy, tests (mock-Ollama), docs build; release workflow via cargo-dist
 - AC4: CONTRIBUTING.md + dual LICENSE-MIT/APACHE (already in repo)
@@ -234,10 +233,10 @@ Budgets are **hard targets**, enforced by tests/benchmarks where measurable. "Wa
 
 | ID | Requirement | Budget | Verification |
 |---|---|---|---|
-| NFR-1 | Warm query latency, p50 / p95 (excluding embedder network call) | ≤ 150 / ≤ 400 ms | Criterion bench + CI timing log |
+| NFR-1 | Warm query latency, p50 / p95 (excluding embedder network call) | ≤ 150 / ≤ 400 ms | Criterion bench (manual/weekly); CI timing log informational only — CI runners are too noisy to gate on 150 ms |
 | NFR-2 | Warm query latency including local Ollama embedding (nomic-embed-text) | ≤ 600 ms p95 | Integration test with live Ollama (feature-gated) |
-| NFR-3 | Cold start → first query answered (index exists) | ≤ 500 ms | Integration test |
-| NFR-4 | RSS steady state, 1k-file repo | ≤ 100 MB | Integration test with `/proc/self/status` sampling |
+| NFR-3 | Cold start → first query answered (when an index exists; the no-index first call is US-301 AC3, embedding-bound and unbounded) | ≤ 500 ms | Integration test |
+| NFR-4 | RSS steady state, 1k-file repo | ≤ 100 MB | Integration test sampling RSS via `sysinfo` (`/proc` on Linux, `task_info` on macOS, `GetProcessMemoryInfo` on Windows) |
 | NFR-5 | Full index throughput (embedded) | ≥ 20 chunks/s; 3k chunks ≤ 60 s | Integration test + manual bench |
 | NFR-6 | No-change incremental index | ≤ 1 s | Integration test |
 | NFR-7 | Idle CPU | 0% | Manual; enforced by "no background threads in idle path" design rule |
@@ -245,14 +244,14 @@ Budgets are **hard targets**, enforced by tests/benchmarks where measurable. "Wa
 | NFR-9 | Test suite | no network; mocked Ollama; ≤ 60 s total | CI |
 | NFR-10 | Index DB size, 1k-file repo | ≤ 150 MB | Informational |
 | NFR-11 | Determinism | identical results for identical query+index state | Unit tests on RRF/fusion |
-| NFR-12 | Portability | Linux first-class; macOS builds and tests pass; Windows: unsupported, documented | CI (linux + macos) |
+| NFR-12 | Portability | Linux, macOS and Windows (x86_64) all first-class: CI build + full test suite on all three; prebuilt release binaries for all three; platform-specific behavior confined to one module | CI matrix (ubuntu/macos/windows-latest) |
 | NFR-13 | Recovery | `index --full` rebuilds from scratch; a crashed index never needs manual surgery | Chaos-ish integration test (kill mid-index → status → reindex --full → green) |
 
 ## 7. Scope
 
 ### 7.1 In scope, v0.1 (MVP)
 
-F1–F7. Single repository per index. Rust binary, Linux. Ollama embedder with FTS-only fallback. MCP tools as listed. Manual reindex (`index`, `reindex`).
+F1–F7. Single repository per index. Rust binary; Linux, macOS and Windows (x86_64) all first-class (NFR-12). Ollama embedder with FTS-only fallback. MCP tools as listed. Manual reindex (`index`, `reindex`).
 
 ### 7.2 In scope, v0.2
 
@@ -287,6 +286,8 @@ See §3.2. Additionally: migrating between DB schema versions (v1 ships schema v
 | sqlite-vec native extension packaging friction | Low | Medium | Bundled via `sqlite-vec` crate's `bundled` feature; fallback: in-Rust cosine over BLOB column if extension fails to load |
 | Agent context bloat from too many/long results | Low | Medium | Hard caps (20-line snippets, ≤ 25 results, ≤ 2k tokens default); measured in eval |
 | Privacy mistakes when open-sourcing eval fixtures | Low | High | Fixtures from public repos only; CI secret-scan on fixtures; session snapshots never committed |
+| Name-based secret exclusion misses content-encoded secrets (`.kube/config`-style base64, tokens without trigger words) | Low | High | Documented residual risk (architecture.md §8); user `.gitignore` discipline; `.codebase-intel-include` is explicit opt-in only |
+| Platform behavior diverges subtly across OSes (paths, priority, FS semantics) — "works on my Linux" | Medium | Medium | Platform-specific code confined to `util.rs` (paths/priority) and the walker; std-only primitives (`File::try_lock`, `directories`); 3-OS CI matrix on every PR |
 | Name collision at publish time | Medium | Low | Rename before v0.4; crates.io/npm/GitHub recheck then |
 
 ## 10. Open questions
@@ -295,7 +296,7 @@ See §3.2. Additionally: migrating between DB schema versions (v1 ships schema v
 |---|---|---|---|
 | Q1 | Crate name stays `codebase-intel`? | Yes — free on crates.io & GitHub check pending re-verify at release | v0.4 |
 | Q2 | Do we ship an npm wrapper (`npx codebase-intel`)? | Maybe in v0.4; Rust install is primary | v0.4 |
-| Q3 | macOS CI — worth the runner cost pre-release? | Yes (it's core, not "extra") | v0.1 |
+| Q3 | CI matrix (Linux + macOS + Windows runners) — worth the runner cost pre-release? | Yes — required by NFR-12; all three are first-class | v0.1 |
 | Q4 | Index poisoned by `.gitignore`d-but-important files (e.g., `dist/` fixtures)? | Also honor `.git/info/exclude`; document `.codebase-intel-include` escape hatch | v0.1 design review |
 | Q5 | Should `reindex` also embed *queries agents actually made* to pre-warm nothing? | No — overfitting to history; the eval loop is offline | n/a |
 

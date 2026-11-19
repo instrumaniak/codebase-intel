@@ -16,7 +16,7 @@ This document defines the data, the extraction, the labels, the metrics, the tun
 
 Facts established on the author machine (opencode v2.3.2, Linux, 2026-11-19 — re-verify at implementation time; the miner is defensive against schema drift):
 
-- **Database:** `~/.local/share/opencode/opencode.db` (SQLite; `OPENCODE_DB` env var overrides). Live WAL database — never opened directly for mining.
+- **Database:** `~/.local/share/opencode/opencode.db` on Linux (the author machine; path differs on macOS/Windows — pass `--db` or set `OPENCODE_DB`). SQLite; `OPENCODE_DB` env var overrides. Live WAL database — never opened directly for mining.
 - **Tables used:**
   - `session_v2` — one row per session: `id`, `project_id`, `directory`, `path`, `title`, `agent`, `model`, `parent_id` (subagent sessions), `time_created/updated`
   - `session_message` — one row per message: `id`, `session_id`, `type`, `seq`, `time_created`, `data` (JSON)
@@ -115,19 +115,19 @@ The report (per eval run) prints: bucket sizes, and Recall@10 per bucket — tun
 ## 6. The tuning loop (US-404)
 
 1. Capture baseline (dense/fts/hybrid) → `docs/eval/baseline-<date>.md`
-2. Change **one** thing: chunk size, gap overlap, RRF k, boost weights, FTS tokenizer (trigram vs unicode61), symbol-boost magnitude, graph-style expansion (v0.3+)
+2. Change **one** thing: chunk granularity, gap-window size, RRF k, boost weights, FTS tokenizer (trigram vs unicode61), symbol-boost magnitude, identifier short-circuit threshold, graph-style expansion (v0.3+)
 3. Re-run eval on the same holdout; keep the change iff Recall@10 or MRR improves on holdout, or a bucket improves without hurting another by > 2%
 4. Record: metric deltas, change description, date — appended to `docs/eval/tuning-log.md`
-5. CI gate (once fixtures exist): retrieval-quality test asserts Recall@10 ≥ floor; PRs that regress it fail
+5. CI gate (once fixtures exist): retrieval-quality test asserts Recall@10 does not regress more than 2% vs the committed baseline **on the public fixture set**; PRs that regress it fail. The gate is baseline-relative — fixture Recall@10 is a regression detector, not an absolute product promise; an absolute floor is set only after 2 tuning iterations (OQ5)
 
 Known levers ranked by expected value: (1) symbol-exact boost magnitude, (2) RRF k and list sizes, (3) chunk granularity for MD/config vs code, (4) identifier short-circuit threshold.
 
 ## 7. Privacy and data hygiene
 
 - Session snapshots are temporary by design (§2.1). Nothing under `~/.local/share/opencode/` is copied into the repo.
-- `eval.jsonl` derived from private repos (KanPad, taskpad-rs) stays **out of git** (`.gitignore`); it lives in `~/.local/share/codebase-intel/eval/` if needed at all.
+- `eval.jsonl` derived from private repos (KanPad, taskpad-rs) stays **out of git** (`.gitignore`); it lives in the platform data dir (Linux shown above in §4.1 paths, e.g. `~/.local/share/codebase-intel/eval/`) if needed at all.
 - The OSS repo ships **fixtures generated against public repositories** (plan: taskpad-rs + one larger public Rust repo) by running agents there and mining *those* sessions; synthetic fallback if insufficient. Fixture generation script is part of F8/F9.
-- No prompt text, file content from private repos, or session metadata is committed. CI runs a secret-pattern scan over `tests/fixtures/`.
+- No prompt text, file content from private repos, or session metadata is committed. CI runs a secret-pattern scan over `tests/fixtures/` **and** any committed `docs/eval/*.md` (architecture.md §8).
 - Mining never sends data anywhere — everything runs locally. Ollama is not involved in mining or evaluation (except when embedding chunks during fixture index builds).
 
 ## 8. Deliverables & exit criteria
@@ -148,3 +148,4 @@ Known levers ranked by expected value: (1) symbol-exact boost magnitude, (2) RRF
 | OQ2 | Use `session_message.time_updated` for churn joins with git log? | Yes for v0.3 git intel joins (recency feature) |
 | OQ3 | Cross-project eval (train on KanPad, test on taskpad-rs)? | Nice for generalization claims; decide after first baseline |
 | OQ4 | Embed task texts for train/test dedup? | Yes, cosine ≥ 0.9 ⇒ drop — cheap and catches rephrasings |
+| OQ5 | When do we set an absolute Recall@10 floor instead of baseline-relative? | After 2 tuning iterations once fixtures stabilize; revisit at v0.2 mid-point |

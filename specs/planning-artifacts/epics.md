@@ -53,7 +53,7 @@
 | US-302 | Low-priority background indexing, WAL reads, lock-file serialization | F3, F6 |
 | US-303 | Resource appetite within budget | F6 |
 
-**Epic exit:** opencode with one config entry spawns server; first query end-to-end < 30 s including full index on KanPad; `cargo test` on KanPad shows no measurable slowdown while reindex runs.
+**Epic exit:** opencode with one config entry spawns the server; first query on a cold index triggers the inline full index (US-301 AC3) and answers in the same call with `duration_ms` reported (KanPad-scale: minutes, embedding-bound; progress via MCP `notifications/progress`); `cargo test` on KanPad shows no measurable slowdown while reindex runs.
 
 ## E4 — Evaluation (v0.2)
 
